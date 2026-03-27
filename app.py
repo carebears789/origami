@@ -2,6 +2,7 @@ import os
 import shutil
 import re
 from flask import Flask, render_template, request, redirect, url_for, flash
+from src.core_logic import record_video, capture_training_images, train_yolo, play_tutorial_video, start_folding_session
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'default-dev-key')  # Needed for flash messages
@@ -116,6 +117,64 @@ def delete(name):
         flash(f'Error deleting origami: {e}', 'danger')
 
     return redirect(url_for('index'))
+
+@app.route('/admin/record/<name>', methods=['POST'])
+def admin_record(name):
+    if name not in get_all_origamis():
+        flash(f'Origami "{name}" not found.', 'danger')
+        return redirect(url_for('index'))
+    flash(f'Recording started for "{name}". Check the OpenCV window.', 'info')
+    success = record_video(name)
+    if not success:
+        flash(f'Error recording video for "{name}".', 'danger')
+    return redirect(url_for('edit', name=name))
+
+@app.route('/admin/capture/<name>', methods=['POST'])
+def admin_capture(name):
+    if name not in get_all_origamis():
+        flash(f'Origami "{name}" not found.', 'danger')
+        return redirect(url_for('index'))
+    flash(f'Capturing started for "{name}". Check the OpenCV window.', 'info')
+    success = capture_training_images(name)
+    if not success:
+        flash(f'Error capturing images for "{name}".', 'danger')
+    return redirect(url_for('edit', name=name))
+
+@app.route('/admin/train/<name>', methods=['POST'])
+def admin_train(name):
+    if name not in get_all_origamis():
+        flash(f'Origami "{name}" not found.', 'danger')
+        return redirect(url_for('index'))
+    flash(f'YOLO training started for "{name}". Check console for progress.', 'info')
+    train_yolo(name)
+    return redirect(url_for('edit', name=name))
+
+@app.route('/student')
+def student_index():
+    origamis = get_all_origamis()
+    return render_template('student.html', origamis=origamis)
+
+@app.route('/student/play/<name>', methods=['POST'])
+def student_play(name):
+    if name not in get_all_origamis():
+        flash(f'Origami "{name}" not found.', 'danger')
+        return redirect(url_for('student_index'))
+    flash(f'Playing tutorial for "{name}". Check the OpenCV window.', 'info')
+    success = play_tutorial_video(name)
+    if not success:
+        flash(f'Error playing tutorial or video not found for "{name}".', 'danger')
+    return redirect(url_for('student_index'))
+
+@app.route('/student/fold/<name>', methods=['POST'])
+def student_fold(name):
+    if name not in get_all_origamis():
+        flash(f'Origami "{name}" not found.', 'danger')
+        return redirect(url_for('student_index'))
+    flash(f'Folding session started for "{name}". Check the OpenCV window.', 'info')
+    success = start_folding_session(name)
+    if not success:
+        flash(f'Error starting folding session for "{name}".', 'danger')
+    return redirect(url_for('student_index'))
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
