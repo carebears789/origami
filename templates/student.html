@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Origami Tutor Student View</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+
+<div class="container mt-5">
+    <!-- Flash Messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Learn Origami</h1>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Back to Admin View</a>
+    </div>
+
+    {% if origamis %}
+    <div class="row row-cols-1 row-cols-md-3 g-4">
+        {% for origami in origamis %}
+        <div class="col">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title text-capitalize">{{ origami }}</h5>
+                    <p class="card-text text-muted">Learn how to fold a {{ origami }}.</p>
+
+                    <div class="d-grid gap-2">
+                        <form action="{{ url_for('student_play', name=origami) }}" method="POST">
+                            <button type="submit" class="btn btn-primary w-100">Watch Tutorial Video</button>
+                        </form>
+                        <form action="{{ url_for('student_fold', name=origami) }}" method="POST">
+                            <button type="submit" class="btn btn-success w-100">Start Folding Session</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-info">No origami models available to learn yet. Ask your teacher to add one!</div>
+    {% endif %}
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

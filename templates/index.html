@@ -23,8 +23,11 @@
     {% endwith %}
 
     <div class="d-flex justify-content-between align-items-center mb-4">
-        <h1>Origami Models</h1>
-        <a href="{{ url_for('create') }}" class="btn btn-primary">Add New Origami</a>
+        <h1>Origami Models (Admin)</h1>
+        <div>
+            <a href="{{ url_for('student_index') }}" class="btn btn-info text-white me-2">Go to Student View</a>
+            <a href="{{ url_for('create') }}" class="btn btn-primary">Add New Origami</a>
+        </div>
     </div>
 
     {% if origamis %}
