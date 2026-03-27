@@ -1,2 +1,4 @@
 __pycache__/
 *.pycoutput.log
+*.pyc
+.venv/
