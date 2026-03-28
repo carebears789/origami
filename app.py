@@ -1,180 +1,93 @@
 import os
-import shutil
-import re
-from flask import Flask, render_template, request, redirect, url_for, flash
-from src.core_logic import record_video, capture_training_images, train_yolo, play_tutorial_video, start_folding_session
+import cv2
+import base64
+import numpy as np
+from flask import Flask, render_template
+from flask_socketio import SocketIO, emit
+from ultralytics import YOLO
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'default-dev-key')  # Needed for flash messages
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-def sanitize_name(name):
-    sanitized = re.sub(r'[^\w\-]', '_', name)
-    return sanitized.strip('_')
-
-def get_all_origamis():
-    try:
-        types = [d for d in os.listdir("data") if os.path.isdir(os.path.join("data", d))]
-        return types
-    except FileNotFoundError:
-        return []
+# Load base YOLO model - no training needed
+model = YOLO('yolov8n.pt')
 
 @app.route('/')
 def index():
-    origamis = get_all_origamis()
-    return render_template('index.html', origamis=origamis)
+    return render_template('index.html')
 
-@app.route('/create', methods=['GET', 'POST'])
-def create():
-    if request.method == 'POST':
-        name = request.form.get('name', '').strip()
-        name = sanitize_name(name)
-
-        if not name:
-            flash('Invalid origami name.', 'danger')
-            return redirect(url_for('create'))
-
-        if name in get_all_origamis():
-            flash(f'Origami "{name}" already exists.', 'warning')
-            return redirect(url_for('index'))
-
-        try:
-            os.makedirs(f"data/{name}/images/train", exist_ok=True)
-            os.makedirs(f"data/{name}/images/val", exist_ok=True)
-            os.makedirs(f"data/{name}/labels/train", exist_ok=True)
-            os.makedirs(f"data/{name}/labels/val", exist_ok=True)
-            os.makedirs(f"videos", exist_ok=True)
-            os.makedirs(f"models/yolo", exist_ok=True)
-
-            flash(f'Origami "{name}" created successfully.', 'success')
-            return redirect(url_for('index'))
-        except Exception as e:
-            flash(f'Error creating origami: {e}', 'danger')
-            return redirect(url_for('create'))
-
-    return render_template('create.html')
-
-@app.route('/edit/<name>', methods=['GET', 'POST'])
-def edit(name):
-    if name not in get_all_origamis():
-        flash(f'Origami "{name}" not found.', 'danger')
-        return redirect(url_for('index'))
-
-    if request.method == 'POST':
-        new_name = request.form.get('new_name', '').strip()
-        new_name = sanitize_name(new_name)
-
-        if not new_name:
-            flash('Invalid new name.', 'danger')
-            return redirect(url_for('edit', name=name))
-
-        if new_name == name:
-            flash('Name is the same as the old one.', 'warning')
-            return redirect(url_for('index'))
-
-        if new_name in get_all_origamis():
-            flash(f'Origami "{new_name}" already exists.', 'warning')
-            return redirect(url_for('edit', name=name))
-
-        try:
-            # Rename data directory
-            if os.path.exists(f"data/{name}"):
-                os.rename(f"data/{name}", f"data/{new_name}")
-
-            # Rename video
-            if os.path.exists(f"videos/{name}.avi"):
-                os.rename(f"videos/{name}.avi", f"videos/{new_name}.avi")
-
-            # Rename model directory
-            if os.path.exists(f"models/yolo/{name}"):
-                os.rename(f"models/yolo/{name}", f"models/yolo/{new_name}")
-
-            flash(f'Origami "{name}" renamed to "{new_name}".', 'success')
-            return redirect(url_for('index'))
-        except Exception as e:
-            flash(f'Error renaming origami: {e}', 'danger')
-            return redirect(url_for('edit', name=name))
-
-    return render_template('edit.html', name=name)
-
-@app.route('/delete/<name>', methods=['POST'])
-def delete(name):
-    if name not in get_all_origamis():
-        flash(f'Origami "{name}" not found.', 'danger')
-        return redirect(url_for('index'))
-
+@socketio.on('process_frame')
+def handle_process_frame(data):
     try:
-        if os.path.exists(f"data/{name}"):
-            shutil.rmtree(f"data/{name}")
+        # Extract base64 image data
+        image_data = data.split(',')[1]
+        decoded_data = base64.b64decode(image_data)
+        np_data = np.frombuffer(decoded_data, np.uint8)
+        img = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
 
-        if os.path.exists(f"videos/{name}.avi"):
-            os.remove(f"videos/{name}.avi")
+        if img is None:
+            emit('error', {'message': 'Invalid image data'})
+            return
 
-        if os.path.exists(f"models/yolo/{name}"):
-            shutil.rmtree(f"models/yolo/{name}")
+        # Run YOLO inference
+        results = model.predict(source=img, show=False, conf=0.5, verbose=False)
+        annotated_frame = results[0].plot()
 
-        flash(f'Origami "{name}" deleted successfully.', 'success')
+        # Extract detected classes for later use in feedback
+        detected_classes = []
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                cls_id = int(box.cls[0])
+                detected_classes.append(model.names[cls_id])
+
+        # Encode annotated image back to base64
+        _, buffer = cv2.imencode('.jpg', annotated_frame)
+        encoded_image = base64.b64encode(buffer).decode('utf-8')
+        result_data = f"data:image/jpeg;base64,{encoded_image}"
+
+        # Emit back the annotated image and the detections
+        emit('annotated_frame', {'image': result_data, 'detections': detected_classes})
+
     except Exception as e:
-        flash(f'Error deleting origami: {e}', 'danger')
+        emit('error', {'message': str(e)})
 
-    return redirect(url_for('index'))
+@socketio.on('get_feedback')
+def handle_get_feedback(data):
+    try:
+        import requests
+        import json
 
-@app.route('/admin/record/<name>', methods=['POST'])
-def admin_record(name):
-    if name not in get_all_origamis():
-        flash(f'Origami "{name}" not found.', 'danger')
-        return redirect(url_for('index'))
-    flash(f'Recording started for "{name}". Check the OpenCV window.', 'info')
-    success = record_video(name)
-    if not success:
-        flash(f'Error recording video for "{name}".', 'danger')
-    return redirect(url_for('edit', name=name))
+        origami_name = data.get('origami_name', 'origami')
+        detected_classes = data.get('detections', [])
+        detected_str = ", ".join(detected_classes) if detected_classes else "nothing"
 
-@app.route('/admin/capture/<name>', methods=['POST'])
-def admin_capture(name):
-    if name not in get_all_origamis():
-        flash(f'Origami "{name}" not found.', 'danger')
-        return redirect(url_for('index'))
-    flash(f'Capturing started for "{name}". Check the OpenCV window.', 'info')
-    success = capture_training_images(name)
-    if not success:
-        flash(f'Error capturing images for "{name}".', 'danger')
-    return redirect(url_for('edit', name=name))
+        prompt = (f"The student is trying to fold an origami '{origami_name}'. "
+                  f"The camera currently sees: {detected_str}. "
+                  "Give brief, encouraging feedback and advice on what they might need to do next or if they made a mistake. "
+                  "Keep it under 3 sentences.")
 
-@app.route('/admin/train/<name>', methods=['POST'])
-def admin_train(name):
-    if name not in get_all_origamis():
-        flash(f'Origami "{name}" not found.', 'danger')
-        return redirect(url_for('index'))
-    flash(f'YOLO training started for "{name}". Check console for progress.', 'info')
-    train_yolo(name)
-    return redirect(url_for('edit', name=name))
+        url = "http://localhost:11434/api/generate"
+        payload = {
+            "model": "llama3.2:1b",  # Adjust model name as needed for Ollama
+            "prompt": prompt,
+            "stream": False
+        }
+        headers = {"Content-Type": "application/json"}
 
-@app.route('/student')
-def student_index():
-    origamis = get_all_origamis()
-    return render_template('student.html', origamis=origamis)
+        # Use timeout to prevent hanging if Ollama is not running
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
 
-@app.route('/student/play/<name>', methods=['POST'])
-def student_play(name):
-    if name not in get_all_origamis():
-        flash(f'Origami "{name}" not found.', 'danger')
-        return redirect(url_for('student_index'))
-    flash(f'Playing tutorial for "{name}". Check the OpenCV window.', 'info')
-    success = play_tutorial_video(name)
-    if not success:
-        flash(f'Error playing tutorial or video not found for "{name}".', 'danger')
-    return redirect(url_for('student_index'))
+        if response.status_code == 200:
+            result = response.json()
+            feedback = result.get('response', 'No feedback received.')
+            emit('feedback', {'message': feedback})
+        else:
+            emit('feedback', {'message': f'Error from Llama API: {response.status_code}'})
 
-@app.route('/student/fold/<name>', methods=['POST'])
-def student_fold(name):
-    if name not in get_all_origamis():
-        flash(f'Origami "{name}" not found.', 'danger')
-        return redirect(url_for('student_index'))
-    flash(f'Folding session started for "{name}". Check the OpenCV window.', 'info')
-    success = start_folding_session(name)
-    if not success:
-        flash(f'Error starting folding session for "{name}".', 'danger')
-    return redirect(url_for('student_index'))
+    except Exception as e:
+        emit('feedback', {'message': f'Error connecting to Llama: {str(e)}'})
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

@@ -3,61 +3,153 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Origami Tutor Admin</title>
+    <title>Origami AI Tutor</title>
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        #video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: 0 auto;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #video, #output-image {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        #output-image {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 2;
+        }
+        #video {
+            z-index: 1;
+            opacity: 0; /* Hide raw video, only show annotated */
+        }
+        .controls {
+            margin-top: 20px;
+        }
+    </style>
 </head>
-<body>
+<body class="bg-light">
 
 <div class="container mt-5">
-    <!-- Flash Messages -->
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for category, message in messages %}
-          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-            {{ message }}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-          </div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
+    <h1 class="text-center mb-4">Origami AI Tutor</h1>
 
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h1>Origami Models (Admin)</h1>
-        <div>
-            <a href="{{ url_for('student_index') }}" class="btn btn-info text-white me-2">Go to Student View</a>
-            <a href="{{ url_for('create') }}" class="btn btn-primary">Add New Origami</a>
-        </div>
+    <div id="video-container">
+        <!-- Hidden video element for capturing camera stream -->
+        <video id="video" autoplay playsinline></video>
+        <!-- Image element to display annotated frames from server -->
+        <img id="output-image" src="" alt="Waiting for camera..." />
     </div>
 
-    {% if origamis %}
-    <table class="table table-bordered table-striped">
-        <thead class="table-dark">
-            <tr>
-                <th>Origami Name</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for origami in origamis %}
-            <tr>
-                <td>{{ origami }}</td>
-                <td>
-                    <a href="{{ url_for('edit', name=origami) }}" class="btn btn-sm btn-warning">Edit</a>
-                    <form action="{{ url_for('delete', name=origami) }}" method="POST" style="display:inline;">
-                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to delete {{ origami }}?');">Delete</button>
-                    </form>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <div class="alert alert-info">No origami models found. Add one!</div>
-    {% endif %}
+    <!-- Hidden canvas to extract frames from video -->
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <div class="controls text-center">
+        <button id="start-btn" class="btn btn-primary me-2">Start Camera</button>
+        <button id="feedback-btn" class="btn btn-success" disabled>Get AI Feedback</button>
+    </div>
+
+    <div class="mt-4">
+        <h4>AI Feedback:</h4>
+        <div id="feedback-box" class="alert alert-info">
+            Press "Get AI Feedback" to ask Llama for help.
+        </div>
+    </div>
 </div>
 
+<!-- Socket.io -->
+<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
 <!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    const socket = io();
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const outputImage = document.getElementById('output-image');
+
+    const startBtn = document.getElementById('start-btn');
+    const feedbackBtn = document.getElementById('feedback-btn');
+    const feedbackBox = document.getElementById('feedback-box');
+
+    let streamInterval;
+    let latestDetections = [];
+    const FRAME_RATE = 10; // Frames per second to send to server
+    const origamiName = "Crane"; // Could be dynamic
+
+    startBtn.addEventListener('click', async () => {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' } // Use back camera on phones
+                });
+                video.srcObject = stream;
+
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+
+                    // Start sending frames to server
+                    startBtn.disabled = true;
+                    startBtn.innerText = "Camera Active";
+                    feedbackBtn.disabled = false;
+
+                    streamInterval = setInterval(sendFrame, 1000 / FRAME_RATE);
+                };
+            } catch (err) {
+                console.error("Error accessing camera: ", err);
+                alert("Could not access camera. Please ensure permissions are granted.");
+            }
+        } else {
+            alert("getUserMedia not supported in this browser.");
+        }
+    });
+
+    function sendFrame() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // Get base64 string
+            const dataURL = canvas.toDataURL('image/jpeg', 0.5); // compress
+
+            // Emit to server
+            socket.emit('process_frame', dataURL);
+        }
+    }
+
+    // Handle annotated frames from server
+    socket.on('annotated_frame', (data) => {
+        outputImage.src = data.image;
+        latestDetections = data.detections;
+    });
+
+    socket.on('error', (data) => {
+        console.error("Server Error:", data.message);
+    });
+
+    // Request Feedback
+    feedbackBtn.addEventListener('click', () => {
+        feedbackBox.innerText = "Asking Llama for advice...";
+        socket.emit('get_feedback', {
+            origami_name: origamiName,
+            detections: latestDetections
+        });
+    });
+
+    // Receive Feedback
+    socket.on('feedback', (data) => {
+        feedbackBox.innerText = data.message;
+    });
+
+</script>
 </body>
 </html>
